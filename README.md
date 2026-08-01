@@ -12,7 +12,7 @@ This application performs robust non-linear regression on enzyme kinetics data t
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/kineticAnalyser.git
+   git clone https://github.com/Adityapanda1992/kineticAnalyser.git
    cd kineticAnalyser
    ```
 
