@@ -1,38 +1,42 @@
 import flet as ft
+import flet_charts as fch
 import numpy as np
 from kinetics_logic import fit_data
 import re
 import matplotlib
 import matplotlib.pyplot as plt
-from flet.matplotlib_chart import MatplotlibChart
+from matplotlib.figure import Figure
 import os
+import sys
+import io
+import base64
 
-matplotlib.use("svg")
+def get_asset_path(filename: str) -> str:
+    """Resolves asset file path for both development and PyInstaller bundled environments."""
+    if hasattr(sys, '_MEIPASS'):
+        bundle_path = os.path.join(sys._MEIPASS, filename)
+        if os.path.exists(bundle_path):
+            return bundle_path
+    cwd_path = os.path.abspath(filename)
+    if os.path.exists(cwd_path):
+        return cwd_path
+    return filename
 
 def main(page: ft.Page):
     page.title = "Enzyme Kinetics Analyzer"
-    page.window_icon = "icon-192.png"
+    page.window.icon = get_asset_path("icon.ico")
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 20
     page.spacing = 20
     
     # --- Help Dialog ---
-    
-    import io
-    import base64
 
     def latex_to_base64(formula, fontsize=18):
-        """Renders LaTeX formula to a base64 encoded PNG for Flet."""
-        plt.figure(figsize=(0.1, 0.1)) # Tiny initial figure
-        # Create a text-only figure
-        fig = plt.figure(figsize=(5, 0.6))
+        """Renders LaTeX formula to a base64 encoded PNG for Flet using standalone Figure."""
+        fig = Figure(figsize=(5, 0.6))
         fig.text(0, 0.5, f"${formula}$", fontsize=fontsize, va='center', ha='left')
-        
         buf = io.BytesIO()
         fig.savefig(buf, format='png', transparent=True, bbox_inches='tight', pad_inches=0.1)
-        plt.close(fig)
-        plt.close() # Close both
-        
         return base64.b64encode(buf.getvalue()).decode('utf-8')
 
     # Pre-render equations
@@ -44,65 +48,63 @@ def main(page: ft.Page):
     mixed_img = latex_to_base64(r"v = \frac{V_{max} [S]}{K_m(1 + \frac{[I]}{K_i}) + [S](1 + \frac{[I]}{\alpha K_i})}")
 
     help_controls = [
-        ft.Text("USER GUIDE", size=24, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_700),
+        ft.Text("USER GUIDE", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700),
         ft.Text("This application analyzes enzyme kinetics data to determine key parameters (Vmax, Km, Ki) using non-linear regression.", size=14),
         ft.Divider(),
         
         ft.Text("KINETIC MODELS", size=18, weight=ft.FontWeight.BOLD),
         
         ft.Text("1. Michaelis-Menten", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=mm_img, height=50),
+        ft.Image(src=mm_img, height=50),
         
         ft.Text("2. Substrate Inhibition (Haldane)", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=inh_img, height=60),
+        ft.Image(src=inh_img, height=60),
         
         ft.Text("3. Competitive Inhibition", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=comp_img, height=60),
+        ft.Image(src=comp_img, height=60),
         
         ft.Text("4. Uncompetitive Inhibition", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=uncomp_img, height=60),
+        ft.Image(src=uncomp_img, height=60),
         
         ft.Text("5. Noncompetitive (Pure) Inhibition", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=noncomp_img, height=60),
+        ft.Image(src=noncomp_img, height=60),
         
         ft.Text("6. Mixed Inhibition", weight=ft.FontWeight.BOLD),
-        ft.Image(src_base64=mixed_img, height=60),
+        ft.Image(src=mixed_img, height=60),
         
         ft.Divider(),
         ft.Text("DATA FORMAT", size=18, weight=ft.FontWeight.BOLD),
         ft.Text("Standard (non-inhibition):", weight=ft.FontWeight.W_500),
-        ft.Text("[S], Rate\n1.0, 5.0\n2.0, 8.5", bgcolor=ft.colors.GREY_100, font_family="Consolas"),
+        ft.Text("[S], Rate\n1.0, 5.0\n2.0, 8.5", bgcolor=ft.Colors.GREY_100, font_family="Consolas"),
         
         ft.Text("Matrix (inhibition):", weight=ft.FontWeight.W_500),
-        ft.Text("[S], I_0, I_10, I_50\n1.0, 5.0, 4.2, 2.1\n2.0, 8.5, 7.1, 4.0", bgcolor=ft.colors.GREY_100, font_family="Consolas"),
+        ft.Text("[S], I_0, I_10, I_50\n1.0, 5.0, 4.2, 2.1\n2.0, 8.5, 7.1, 4.0", bgcolor=ft.Colors.GREY_100, font_family="Consolas"),
         ft.Divider(),
         ft.Text("WEIGHTING", size=18, weight=ft.FontWeight.BOLD),
         ft.Text("• None: Ordinary Least Squares.\n• 1/y: Errors scale with rate (Poisson).\n• 1/y²: Consistent relative error (weights low rates heavily).", size=14),
     ]
 
     def close_help(e):
-        help_dialog.open = False
-        page.update()
+        page.pop_dialog()
 
-    help_dialog = ft.AlertDialog(
-        modal=False,
-        title=ft.Text("Help & Documentation"),
-        content=ft.Container(
-            content=ft.Column(help_controls, scroll=ft.ScrollMode.AUTO),
-            width=600,
-            height=400,
-            padding=10,
-        ),
-        actions=[
-            ft.TextButton("Close", on_click=close_help),
-        ],
-        actions_alignment=ft.MainAxisAlignment.END,
-    )
+    def create_help_dialog():
+        return ft.AlertDialog(
+            modal=False,
+            title=ft.Text("Help & Documentation"),
+            content=ft.Container(
+                content=ft.Column(help_controls, scroll=ft.ScrollMode.AUTO),
+                width=600,
+                height=400,
+                padding=10,
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=close_help),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
 
     def open_help(e):
-        page.dialog = help_dialog
-        help_dialog.open = True
-        page.update()
+        page.show_dialog(create_help_dialog())
 
     # --- UI Components ---
     
@@ -112,11 +114,11 @@ def main(page: ft.Page):
             "Enzyme Kinetics Analyzer",
             size=32,
             weight=ft.FontWeight.BOLD,
-            color=ft.colors.BLUE_700,
+            color=ft.Colors.BLUE_700,
             expand=True
         ),
         ft.IconButton(
-            icon=ft.icons.HELP_OUTLINE, 
+            icon=ft.Icons.HELP_OUTLINE, 
             icon_size=30,
             tooltip="User Guide",
             on_click=open_help
@@ -170,10 +172,19 @@ def main(page: ft.Page):
     ax_main = fig.add_subplot(gs[0])
     ax_res = fig.add_subplot(gs[1])
     
-    chart = MatplotlibChart(fig, expand=True)
+    ax_main.set_ylabel(f"Rate ({unit_v.value})")
+    ax_main.set_title("Kinetics Fit")
+    ax_main.grid(True, linestyle='--', alpha=0.5)
+    ax_res.set_xlabel(f"Concentration [{unit_s.value}]")
+    ax_res.set_ylabel("Resid.")
+    ax_res.axhline(0, color='black', linewidth=0.8)
+    ax_res.grid(True, linestyle='--', alpha=0.5)
+    fig.canvas.draw()
+
+    chart = fch.MatplotlibChart(figure=fig, expand=True)
 
     results_text = ft.Column([
-        ft.Text("Results will appear here", size=16, color=ft.colors.GREY_700),
+        ft.Text("Results will appear here", size=16, color=ft.Colors.GREY_700),
     ], scroll=ft.ScrollMode.AUTO)
 
     # --- Functions ---
@@ -278,7 +289,7 @@ def main(page: ft.Page):
         s_data, v_data, i_data = parse_data_matrix(raw_text, model_type=model)
         
         if len(s_data) < 3:
-            page.show_snack_bar(ft.SnackBar(content=ft.Text("Need at least 3 valid points")))
+            page.show_dialog(ft.SnackBar(content=ft.Text("Need at least 3 valid points")))
             return
 
         # Get settings
@@ -289,7 +300,7 @@ def main(page: ft.Page):
         if model in ['competitive', 'uncompetitive', 'noncompetitive', 'mixed']:
             unique_i = set(i_data)
             if len(unique_i) < 2 and list(unique_i)[0] == 0:
-                 page.show_snack_bar(ft.SnackBar(content=ft.Text("Warning: Inhibition model selected but no Inhibitor data found (I=0).")))
+                 page.show_dialog(ft.SnackBar(content=ft.Text("Warning: Inhibition model selected but no Inhibitor data found (I=0).")))
 
         results = fit_data(s_data, v_data, i_data, model_type=model, weighting=weighting, robust=False)
         
@@ -321,9 +332,10 @@ def main(page: ft.Page):
                      lines.append(f"Ki':  {ki_p:.4f}")
 
             lines.append("-" * 20)
-            lines.append(f"R²:  {results.get('r_squared', 0):.4f}")
-            lines.append(f"AIC: {results.get('aic', 0):.2f}")
-            lines.append(f"RSS: {results.get('rss', 0):.4e}")
+            lines.append(f"R²:   {results.get('r_squared', 0):.4f}")
+            lines.append(f"AICc: {results.get('aicc', results.get('aic', 0)):.2f}")
+            lines.append(f"AIC:  {results.get('aic', 0):.2f}")
+            lines.append(f"RSS:  {results.get('rss', 0):.4e}")
             
             # Update UI Text
             results_controls = [ft.Text("Analysis Results", size=18, weight=ft.FontWeight.BOLD)]
@@ -351,8 +363,15 @@ def main(page: ft.Page):
             # Organize data by inhibitor concentration for clearer plotting
             unique_i = sorted(list(set(i_data)))
             # Colormap
-            cmap = matplotlib.cm.get_cmap('viridis')
-            norm = matplotlib.colors.Normalize(vmin=min(unique_i), vmax=max(unique_i))
+            cmap = matplotlib.colormaps['viridis']
+            if len(unique_i) > 1:
+                v_min = min(unique_i)
+                v_max = max(unique_i)
+                if v_max == v_min:
+                    v_max += 1.0
+                norm = matplotlib.colors.Normalize(vmin=v_min, vmax=v_max)
+            else:
+                norm = None
             
             # If too many unique I, fallback to simple scatter
             if len(unique_i) > 10:
@@ -365,7 +384,7 @@ def main(page: ft.Page):
                     s_sub = [s for s, m in zip(s_data, mask) if m]
                     v_sub = [v for v, m in zip(v_data, mask) if m]
                     
-                    if len(unique_i) > 1:
+                    if len(unique_i) > 1 and norm is not None:
                         color = cmap(norm(i_val))
                         label = f"I={i_val:g}"
                     else:
@@ -375,12 +394,9 @@ def main(page: ft.Page):
                     ax_main.plot(s_sub, v_sub, 'o', label=label, color=color, alpha=0.7)
                     
                     # Plot Fit Curve (if available)
-                    # We need to find the matching curve in results['fitted_curves'] or results['fitted_curve']
-                    
                     if 'fitted_curves' in results:
                         # Find closest key in dict
                         curves = results['fitted_curves']
-                        # key search
                         matched_key = None
                         for k in curves.keys():
                             if abs(k - i_val) < 1e-9:
@@ -404,24 +420,21 @@ def main(page: ft.Page):
             # --- Plot Residuals ---
             residuals = results.get('residuals', [])
             if residuals:
-                # Need to sort s_data for stem plot?
-                # Stem plot x=s. Scatter is better if unordered.
-                # Let's use scatter for residuals
                  ax_res.scatter(s_data, residuals, alpha=0.6, color='tab:purple')
-                 # Add zero line
                  ax_res.axhline(0, color='black', alpha=0.5)
 
+            fig.canvas.draw()
             chart.update()
             page.update()
             
         else:
-             page.show_snack_bar(ft.SnackBar(content=ft.Text("Fitting failed. Check data format.")))
+             page.show_dialog(ft.SnackBar(content=ft.Text("Fitting failed. Check data format.")))
 
     # --- Layout ---
     
-    calc_button = ft.ElevatedButton("Calculate", icon=ft.icons.CALCULATE, 
-                                    on_click=calculate_kinetics,
-                                    style=ft.ButtonStyle(bgcolor=ft.colors.BLUE_600, color=ft.colors.WHITE))
+    calc_button = ft.Button("Calculate", icon=ft.Icons.CALCULATE, 
+                            on_click=calculate_kinetics,
+                            style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE))
                                     
     # Disable expand on data_input to avoid layout issues in the nested structure
     data_input.expand = False
@@ -453,9 +466,9 @@ def main(page: ft.Page):
         ft.Container(
             content=results_text,
             padding=10,
-            bgcolor=ft.colors.BLUE_GREY_50,
+            bgcolor=ft.Colors.BLUE_GREY_50,
             border_radius=8,
-            border=ft.border.all(1, ft.colors.BLUE_GREY_100),
+            border=ft.Border.all(1, ft.Colors.BLUE_GREY_100),
             height=200, 
             width=400
         )
@@ -466,16 +479,16 @@ def main(page: ft.Page):
         ft.Container(
             content=chart,
             padding=5,
-            bgcolor=ft.colors.WHITE,
+            bgcolor=ft.Colors.WHITE,
             border_radius=10,
-            border=ft.border.all(1, ft.colors.GREY_300),
+            border=ft.Border.all(1, ft.Colors.GREY_300),
             expand=True
         )
     ], expand=True)
 
     footer = ft.Row([
         ft.Text("Developed in Molecular Microbiology Laboratory, Dept of Bioscience and Biotechnology, IIT Kharagpur", 
-               size=10, color=ft.colors.GREY_500)
+               size=10, color=ft.Colors.GREY_500)
     ], alignment=ft.MainAxisAlignment.END)
 
     page.add(
@@ -487,4 +500,4 @@ def main(page: ft.Page):
         footer
     )
 
-ft.app(target=main, assets_dir=".")
+ft.run(main, assets_dir=".")

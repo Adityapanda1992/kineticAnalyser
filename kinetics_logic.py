@@ -14,30 +14,19 @@ def substrate_inhibition(s: np.ndarray, vmax: float, km: float, ki: float) -> np
 
 def competitive_inhibition(s: np.ndarray, i: np.ndarray, vmax: float, km: float, ki: float) -> np.ndarray:
     """Competitive Inhibition."""
-    # v = Vmax * S / (Km(1 + I/Ki) + S)
     return (vmax * s) / (km * (1 + i / ki) + s)
 
 def uncompetitive_inhibition(s: np.ndarray, i: np.ndarray, vmax: float, km: float, ki: float) -> np.ndarray:
     """Uncompetitive Inhibition."""
-    # v = Vmax * S / (Km + S(1 + I/Ki))
     return (vmax * s) / (km + s * (1 + i / ki))
 
 def noncompetitive_inhibition(s: np.ndarray, i: np.ndarray, vmax: float, km: float, ki: float) -> np.ndarray:
     """Noncompetitive (Pure) Inhibition."""
-    # v = Vmax * S / ((1 + I/Ki) * (Km + S))
     return (vmax * s) / ((1 + i / ki) * (km + s))
 
 def mixed_inhibition(s: np.ndarray, i: np.ndarray, vmax: float, km: float, ki: float, alpha: float) -> np.ndarray:
     """Mixed Inhibition."""
-    # General form: v = Vmax * S / (Km(1 + I/Ki) + S(1 + I/(alpha*Ki)))
-    # Here alpha = Ki' / Ki. 
-    # If alpha > 1, binding of I decreases affinity for S (Competitive-like).
-    # If alpha < 1, binding of I increases affinity for S.
-    # If alpha = 1, Noncompetitive.
-    
-    # Avoid division by zero if alpha is tiny
-    if alpha < 1e-9: alpha = 1e-9
-    
+    if alpha < 1e-12: alpha = 1e-12
     term_km = km * (1 + i / ki)
     term_s = s * (1 + i / (alpha * ki))
     return (vmax * s) / (term_km + term_s)
@@ -45,13 +34,11 @@ def mixed_inhibition(s: np.ndarray, i: np.ndarray, vmax: float, km: float, ki: f
 
 def estimate_initial_params(s: np.ndarray, v: np.ndarray, i: Optional[np.ndarray] = None, model_type: str = 'michaelis_menten') -> List[float]:
     """
-    Estimates initial params.
+    Estimates initial parameter values for non-linear regression.
     """
     try:
-        # 1. Basic MM est from data where I=0 (or all data if I not provided)
         mask = (v > 1e-9) & (s > 1e-9)
         if i is not None:
-             # Try to use only uninhibited data for Vmax/Km guess
              mask_zero_i = mask & (i < 1e-9)
              if np.sum(mask_zero_i) >= 2:
                  s_for_est = s[mask_zero_i]
@@ -78,38 +65,53 @@ def estimate_initial_params(s: np.ndarray, v: np.ndarray, i: Optional[np.ndarray
                 vmax_est = np.max(v)
                 km_est = np.median(s)
         
-        # Bounds logic
         vmax_est = max(vmax_est, np.max(v) * 0.5)
         km_est = max(km_est, 1e-6)
         
-        # 2. Estimate Ki if needed
         if model_type == 'michaelis_menten':
             return [vmax_est, km_est]
             
         elif model_type == 'substrate_inhibition':
-            # Ki is usually high
-            ki_est = np.max(s) * 2
+            ki_est = np.max(s) * 2.0
             return [vmax_est, km_est, ki_est]
             
         elif model_type in ['competitive', 'uncompetitive', 'noncompetitive', 'mixed']:
-            # Rough guess for Ki: often comparable to Km or concentrations used
             ki_est = np.median(i[i > 0]) if i is not None and np.any(i > 0) else 1.0
             
             if model_type == 'mixed':
-                return [vmax_est, km_est, ki_est, 1.0] # alpha=1 (Noncomp start)
+                return [vmax_est, km_est, ki_est, 1.0] # alpha=1.0 initial guess
             else:
                 return [vmax_est, km_est, ki_est]
                 
         return [vmax_est, km_est]
 
     except Exception:
-        # Absolute fallback
         if model_type == 'mixed':
              return [np.max(v), np.median(s), 1.0, 1.0]
         elif model_type == 'michaelis_menten':
              return [np.max(v), np.median(s)]
         else:
              return [np.max(v), np.median(s), 1.0]
+
+
+def compute_weights(y_data: np.ndarray, weighting: Optional[str] = None) -> np.ndarray:
+    """
+    Computes standard deviations (sigma) for weighting with a continuous relative noise floor.
+    Prevents artificial step-discontinuities and zero division near base rate levels.
+    """
+    if weighting is None or weighting == "None":
+        return np.ones_like(y_data)
+    
+    # Continuous noise floor based on 1% of mean rate magnitude
+    noise_floor = max(1e-6, 0.01 * np.mean(np.abs(y_data)))
+    y_clamped = np.maximum(np.abs(y_data), noise_floor)
+    
+    if weighting == "1/y":
+        return np.sqrt(y_clamped)
+    elif weighting == "1/y2":
+        return y_clamped
+    else:
+        return np.ones_like(y_data)
 
 
 def fit_data(concentrations: List[float], 
@@ -119,7 +121,12 @@ def fit_data(concentrations: List[float],
              weighting: Optional[str] = None, 
              robust: bool = False) -> Optional[Dict]:
     """
-    Fits kinetic data.
+    Fits kinetic data using non-linear least squares optimization with high scientific accuracy.
+    Includes:
+    - Strictly positive parameter bounds (prevents division by zero)
+    - Relative noise-floored weighting schemes (prevents near-zero rate exploding weights)
+    - Correct unweighted vs weighted RSS and R² evaluation
+    - Small-Sample Corrected Akaike Information Criterion (AICc)
     """
 
     x_data = np.array(concentrations, dtype=float)
@@ -130,29 +137,22 @@ def fit_data(concentrations: List[float],
     if len(x_data) != len(y_data): return None
     if i_data is not None and len(i_data) != len(x_data): return None
     
-    # Requirement: Inhibition models need inhibitor data
-    if model_type in ['competitive', 'uncompetitive', 'noncompetitive', 'mixed'] and i_data is None:
-        return None
+    # Requirement: Inhibition models need inhibitor data with variation
+    if model_type in ['competitive', 'uncompetitive', 'noncompetitive', 'mixed']:
+        if i_data is None:
+            return None
+        if np.std(i_data) < 1e-9:
+            # Inhibitor concentration does not vary; Ki is unidentifiable
+            return None
 
     # ---- Initial Guesses ----
     p0 = estimate_initial_params(x_data, y_data, i_data, model_type)
 
     # ---- Weights ----
-    if weighting is None:
-        sigma = np.ones_like(y_data)
-    elif weighting == "1/y":
-        sigma = np.sqrt(np.abs(y_data))
-        sigma[sigma < 1e-9] = 1.0 
-    elif weighting == "1/y2":
-        sigma = np.abs(y_data)
-        sigma[sigma < 1e-9] = 1.0
-    else:
-        sigma = np.ones_like(y_data)
+    sigma = compute_weights(y_data, weighting)
 
-    # ---- Residuals ----
+    # ---- Residuals Function ----
     def residuals(params, x, y, i_conc, w_sigma):
-        model_v = np.zeros_like(x)
-        
         if model_type == 'michaelis_menten':
             model_v = michaelis_menten(x, params[0], params[1])
         elif model_type == 'substrate_inhibition':
@@ -165,11 +165,14 @@ def fit_data(concentrations: List[float],
             model_v = noncompetitive_inhibition(x, i_conc, params[0], params[1], params[2])
         elif model_type == 'mixed':
             model_v = mixed_inhibition(x, i_conc, params[0], params[1], params[2], params[3])
+        else:
+            model_v = michaelis_menten(x, params[0], params[1])
             
         return (y - model_v) / w_sigma
 
-    # ---- Bounds ----
-    bounds_lower = [0] * len(p0)
+    # ---- Strictly Positive Bounds ----
+    # Prevents parameters touching 0.0 which leads to 1/0 division in rate laws
+    bounds_lower = [1e-12] * len(p0)
     bounds_upper = [np.inf] * len(p0)
 
     # ---- Fit ----
@@ -180,7 +183,7 @@ def fit_data(concentrations: List[float],
             args=(x_data, y_data, i_data, sigma),
             bounds=(bounds_lower, bounds_upper),
             loss='huber' if robust else 'linear',
-            max_nfev=2000
+            max_nfev=3000
         )
     except Exception as e:
         print(f"Fitting error: {e}")
@@ -191,48 +194,53 @@ def fit_data(concentrations: List[float],
 
     params = result.x
     
-    # ---- Statistics ----
-    J = result.jac
-    rss = np.sum(result.fun**2)
+    # ---- Model Evaluation ----
+    if model_type == 'michaelis_menten':
+        y_model = michaelis_menten(x_data, *params)
+    elif model_type == 'substrate_inhibition':
+        y_model = substrate_inhibition(x_data, *params)
+    elif model_type == 'competitive':
+        y_model = competitive_inhibition(x_data, i_data, *params)
+    elif model_type == 'uncompetitive':
+        y_model = uncompetitive_inhibition(x_data, i_data, *params)
+    elif model_type == 'noncompetitive':
+        y_model = noncompetitive_inhibition(x_data, i_data, *params)
+    elif model_type == 'mixed':
+        y_model = mixed_inhibition(x_data, i_data, *params)
+
     n = len(y_data)
     p = len(params)
-    
-    # Degrees of freedom
     dof = n - p
+
+    # Residual Sum of Squares (Unweighted)
+    ss_res_unweighted = np.sum((y_data - y_model)**2)
+    ss_tot_unweighted = np.sum((y_data - np.mean(y_data))**2)
+    r2_unweighted = 1.0 - (ss_res_unweighted / ss_tot_unweighted) if ss_tot_unweighted > 0 else 0.0
+
+    # Weighted Residual Sum of Squares (Chi-square)
+    chi_square = np.sum(result.fun**2)
+
+    # Weighted R-squared
+    w = 1.0 / (sigma**2)
+    y_bar_w = np.sum(w * y_data) / np.sum(w)
+    ss_tot_w = np.sum(w * (y_data - y_bar_w)**2)
+    r2_weighted = 1.0 - (chi_square / ss_tot_w) if ss_tot_w > 0 else 0.0
+
+    # ---- Statistics & Parameter Uncertainties ----
     if dof <= 0:
-        # Cannot estimate error with zero or negative degrees of freedom
         perr = np.full_like(params, np.nan)
     else:
-        # Reduced chi-square (residual variance)
-        residual_var = rss / dof
-        
-        # If fit is numerically 'perfect' (unlikely for real data), 
-        # we don't want to report 0 error unless it's truly exact.
+        residual_var = chi_square / dof
         if residual_var < 1e-18:
             residual_var = 0.0
 
         try:
-            # Use SVD to check for singular values
-            # This helps identify which specific parameters are unconstrained
-            U, s, Vh = np.linalg.svd(J, full_matrices=False)
-            
-            # Threshold for singularity (standard heuristic)
-            threshold = np.max(s) * max(J.shape) * np.finfo(s.dtype).eps
-            
-            # Identify columns of J (parameters) that are effectively null
-            # or linearly dependent. Better yet, use the pseudo-inverse 
-            # and then check the diagonal of the resulting covariance.
+            J = result.jac
             jtj_inv = np.linalg.pinv(J.T @ J, rcond=1e-12)
             cov = jtj_inv * residual_var
-            
-            # A diagonal element of jtj_inv being near zero after pinv 
-            # usually means that parameter was suppressed because its singular value was too small.
-            # We explicitly label these as NaN.
             diag_jtj = np.diag(jtj_inv)
             perr = []
             for i in range(len(params)):
-                # If the singular value associated with this parameter is effectively suppressed 
-                # or if residual_var is effectively zero, we can't reliably report precision.
                 if diag_jtj[i] < 1e-20: 
                     perr.append(np.nan)
                 else:
@@ -242,13 +250,31 @@ def fit_data(concentrations: List[float],
         except (np.linalg.LinAlgError, ValueError, RuntimeWarning):
             perr = np.full_like(params, np.nan)
 
+    # ---- Akaike Information Criterion (AIC & AICc) ----
+    if weighting is not None and weighting != "None":
+        # Weighted log-likelihood AIC
+        aic = n * np.log(chi_square / n) + 2 * np.sum(np.log(sigma)) + 2 * p
+    else:
+        aic = n * np.log(ss_res_unweighted / n) + 2 * p if ss_res_unweighted > 0 else -np.inf
+
+    # Small-sample corrected AIC (AICc)
+    if n - p - 1 > 0:
+        aicc = aic + (2 * p * (p + 1)) / (n - p - 1)
+    else:
+        aicc = aic
+
     # ---- Results Packet ----
     results = {
         'model': model_type,
         'fitted_params': params.tolist(),
         'param_errors': perr.tolist(),
-        'aic': n * np.log(rss/n) + 2*p if rss > 0 else -np.inf,
-        'rss': rss,
+        'aic': aic,
+        'aicc': aicc,
+        'rss': ss_res_unweighted,
+        'chi_square': chi_square,
+        'r_squared': r2_weighted if (weighting and weighting != "None") else r2_unweighted,
+        'r_squared_unweighted': r2_unweighted,
+        'r_squared_weighted': r2_weighted,
         'dof': dof
     }
 
@@ -274,23 +300,6 @@ def fit_data(concentrations: List[float],
     if model_type == 'mixed':
         results['ki_prime'] = results['ki'] * results['alpha']
     
-    # ---- R-squared & Model Generation ----
-    if model_type == 'michaelis_menten':
-        y_model = michaelis_menten(x_data, *params)
-    elif model_type == 'substrate_inhibition':
-        y_model = substrate_inhibition(x_data, *params)
-    elif model_type == 'competitive':
-        y_model = competitive_inhibition(x_data, i_data, *params)
-    elif model_type == 'uncompetitive':
-        y_model = uncompetitive_inhibition(x_data, i_data, *params)
-    elif model_type == 'noncompetitive':
-        y_model = noncompetitive_inhibition(x_data, i_data, *params)
-    elif model_type == 'mixed':
-        y_model = mixed_inhibition(x_data, i_data, *params)
-
-    ss_res = np.sum((y_data - y_model)**2)
-    ss_tot = np.sum((y_data - np.mean(y_data))**2)
-    results['r_squared'] = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
     results['residuals'] = (y_data - y_model).tolist()
 
     # ---- Smooth Curves for Plotting ----
@@ -304,7 +313,6 @@ def fit_data(concentrations: List[float],
         results['fitted_curve'] = (x_smooth.tolist(), y_smooth.tolist())
         
     else:
-        # For inhibition, we generate curves for each UNIQUE inhibitor concentration present in data
         unique_i = np.unique(i_data)
         unique_i.sort()
         curves = {}
@@ -323,3 +331,4 @@ def fit_data(concentrations: List[float],
         results['fitted_curves'] = curves
 
     return results
+

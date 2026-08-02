@@ -32,29 +32,22 @@ This application performs robust non-linear regression on enzyme kinetics data t
    python enzyme_app.py
    ```
 
-## Requirements
-- Python 3.8+
-- Flet
-- NumPy
-- SciPy
-- Matplotlib
-
-## Building Standalone Executable
+## Building Standalone Executable (optional)
 you can build your own standalone executable for Windows, Linux, or macOS locally.
 
-1. **Install Flet**:
+1. **Install pyinstaller**:
    ```bash
-   pip install flet
+   pip install pyinstaller==6.21.0
    ```
 
 2. **Run the packaging command**:
    - **Windows**:
      ```bash
-     flet pack enzyme_app.py -n "EnzymeKinetic Analyzer" -i icon.ico
+     flet pack enzyme_app.py -n "EnzymeKinetic Analyzer" -i icon.ico --add-data "icon.ico;."
      ```
    - **macOS/Linux**:
      ```bash
-     flet pack enzyme_app.py -n "EnzymeKinetic Analyzer" -i icon.png
+     flet pack enzyme_app.py -n "EnzymeKinetic Analyzer" -i icon.ico --add-data "icon.ico:."
      ```
 
 The executable will be generated in the `dist` folder.
